@@ -86,6 +86,17 @@ const resolveSiteId = async (value) => {
   return (exact || records[0])?.id || false;
 };
 
+export const getTravelSiteOptions = async (search = '', limit = 50) => {
+  const model = await getTravelSiteModel();
+  const records = await searchOdooNameRecords(model, search, limit);
+
+  return records.map((record) => ({
+    id: record.id,
+    name: record.display_name || record.name,
+    model,
+  }));
+};
+
 const normaliseTechnicianIds = (teamOnSite = []) => {
   const ids = teamOnSite
     .map((member) => member.id || member.uid)
@@ -440,6 +451,7 @@ export default {
   getOpenTravelLogs,
   getLogsNeedingExpense,
   getTravelLogsByDateRange,
+  getTravelSiteOptions,
   floatTimeToHHMM,
   HHMMToFloatTime,
   MODEL,

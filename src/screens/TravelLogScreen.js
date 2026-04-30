@@ -26,7 +26,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { enqueueOdooOperation } from '../services/offlineSync';
 import { getOdooUsers, odooSession } from '../services/odoo';
-import { submitTravelLogToOdoo } from '../services/modules/travelLogModule';
+import { getTravelSiteOptions, submitTravelLogToOdoo } from '../services/modules/travelLogModule';
 import useNetworkStatus from '../hooks/useNetworkStatus';
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
@@ -257,6 +257,8 @@ const TravelLogScreen = ({ navigation }) => {
   const [pickerValue,   setPickerValue]   = useState(new Date());
 
   const [allUsers,     setAllUsers]     = useState([]);
+  const [siteOptions,  setSiteOptions]  = useState([]);
+  const [activeSiteDropdown, setActiveSiteDropdown] = useState(null);
   const [userSearch,   setUserSearch]   = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
   const [saving,       setSaving]       = useState(false);
@@ -279,11 +281,30 @@ const TravelLogScreen = ({ navigation }) => {
     })();
   }, []);
 
+  useEffect(() => {
+    (async () => {
+      try {
+        const sites = await getTravelSiteOptions('', 100);
+        setSiteOptions(sites);
+      } catch (e) {
+        console.warn('Could not load Odoo travel sites:', e.message);
+      }
+    })();
+  }, []);
+
   const filteredUsers = allUsers.filter((u) => {
     if (!userSearch.trim()) return false;
     const q = userSearch.toLowerCase();
     return u.fullName?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q);
   });
+
+  const filteredSites = (value) => {
+    const q = value.trim().toLowerCase();
+    if (!q) return siteOptions.slice(0, 8);
+    return siteOptions
+      .filter((site) => site.name?.toLowerCase().includes(q))
+      .slice(0, 8);
+  };
 
   const openPicker = (target, mode, currentValue) => {
     setPickerTarget(target);
@@ -457,13 +478,39 @@ const TravelLogScreen = ({ navigation }) => {
           {/* ── ROUTE ── */}
           <SectionLabel iconName="map-outline" label="Route" />
           <View style={s.row}>
-            <InputField label="Site From" value={siteFrom} onChangeText={setSiteFrom}
-              placeholder="Departure site" iconName="location-outline" flex={1} />
+            <SiteField
+              label="Site From"
+              value={siteFrom}
+              onChangeText={setSiteFrom}
+              placeholder="Departure site"
+              iconName="location-outline"
+              flex={1}
+              active={activeSiteDropdown === 'from'}
+              onFocus={() => setActiveSiteDropdown('from')}
+              onSelect={(site) => {
+                setSiteFrom(site.name);
+                setActiveSiteDropdown(null);
+              }}
+              sites={filteredSites(siteFrom)}
+            />
             <View style={s.routeArrowWrap}>
               <Ionicons name="arrow-forward" size={18} color={C.primary} />
             </View>
-            <InputField label="Site To" value={siteTo} onChangeText={setSiteTo}
-              placeholder="Arrival site" iconName="flag-outline" flex={1} />
+            <SiteField
+              label="Site To"
+              value={siteTo}
+              onChangeText={setSiteTo}
+              placeholder="Arrival site"
+              iconName="flag-outline"
+              flex={1}
+              active={activeSiteDropdown === 'to'}
+              onFocus={() => setActiveSiteDropdown('to')}
+              onSelect={(site) => {
+                setSiteTo(site.name);
+                setActiveSiteDropdown(null);
+              }}
+              sites={filteredSites(siteTo)}
+            />
           </View>
           <InputField label="Distance (KM)" value={kilometres} onChangeText={setKilometres}
             placeholder="e.g. 45" iconName="speedometer-outline" keyboardType="numeric" />
@@ -604,6 +651,47 @@ const InputField = ({ label, flex, iconName, ...props }) => (
   </View>
 );
 
+const SiteField = ({
+  label,
+  flex,
+  iconName,
+  value,
+  onChangeText,
+  placeholder,
+  active,
+  onFocus,
+  onSelect,
+  sites,
+}) => (
+  <View style={[s.inputContainer, s.siteInputContainer, flex && { flex }]}>
+    <Text style={s.inputLabel}>{label}</Text>
+    <View style={s.iconInput}>
+      {iconName && <Ionicons name={iconName} size={16} color={C.textMuted} style={s.iconInputIcon} />}
+      <TextInput
+        style={s.iconInputText}
+        value={value}
+        onChangeText={(text) => {
+          onChangeText(text);
+          onFocus();
+        }}
+        onFocus={onFocus}
+        placeholder={placeholder}
+        placeholderTextColor={C.textMuted}
+      />
+    </View>
+    {active && sites.length > 0 && (
+      <View style={s.siteDropdown}>
+        {sites.map((site) => (
+          <TouchableOpacity key={`${site.model}-${site.id}`} style={s.siteDropdownItem} onPress={() => onSelect(site)}>
+            <Ionicons name="business-outline" size={14} color={C.primary} />
+            <Text style={s.siteDropdownText} numberOfLines={1}>{site.name}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    )}
+  </View>
+);
+
 const DateField = ({ label, value, iconName, onPress, flex }) => (
   <TouchableOpacity style={[s.inputContainer, flex && { flex }]} onPress={onPress}>
     <Text style={s.inputLabel}>{label}</Text>
@@ -706,6 +794,33 @@ const s = StyleSheet.create({
     flex: 1, color: C.textPrimary, fontSize: 15,
     paddingHorizontal: 8, paddingVertical: 12,
   },
+  siteInputContainer: { position: 'relative', zIndex: 20 },
+  siteDropdown: {
+    position: 'absolute',
+    top: 70,
+    left: 0,
+    right: 0,
+    backgroundColor: C.surface,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: C.borderLight,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 14,
+  },
+  siteDropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+  },
+  siteDropdownText: { flex: 1, color: C.textPrimary, fontSize: 13, fontWeight: '600' },
 
   // Row layout
   row:            { flexDirection: 'row', alignItems: 'flex-start' },

@@ -59,16 +59,23 @@ const buildHeaders = (withSession = true) => {
 };
 
 const requestOdoo = async (path, params = {}, withSession = true) => {
-  const response = await fetch(`${normalizeOdooBaseUrl()}${path}`, {
-    method: 'POST',
-    headers: buildHeaders(withSession),
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'call',
-      params,
-      id: Date.now(),
-    }),
-  });
+  const url = `${normalizeOdooBaseUrl()}${path}`;
+  let response;
+
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: buildHeaders(withSession),
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'call',
+        params,
+        id: Date.now(),
+      }),
+    });
+  } catch (error) {
+    throw new Error(`Could not reach Odoo at ${normalizeOdooBaseUrl()}. ${error.message}`);
+  }
 
   const data = await response.json();
 
