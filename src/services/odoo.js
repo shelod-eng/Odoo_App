@@ -161,6 +161,11 @@ export const searchOdooRecords = async (
     order,
   });
 
+export const getOdooFields = (model, fieldNames = []) =>
+  callKw(model, 'fields_get', [fieldNames], {
+    attributes: ['string', 'type', 'relation'],
+  });
+
 export const getOdooRecord = async (model, recordId, fields = []) => {
   const result = await callKw(model, 'read', [[recordId]], { fields });
   return result?.[0] || null;
@@ -229,6 +234,7 @@ export default {
   deleteOdooRecord,
   callOdooAction,
   callKw,
+  getOdooFields,
   getOdooUsers,
   searchOdooNameRecords,
   odooSession,

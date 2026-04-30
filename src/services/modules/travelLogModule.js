@@ -9,6 +9,7 @@ import {
   deleteOdooRecord,
   callOdooAction,
   odooSession,
+  getOdooFields,
   searchOdooNameRecords,
 } from '../odoo';
 import { odooConfig } from '../../config/odooConfig';
@@ -51,12 +52,31 @@ const many2OneName = (value) => {
   return value || '';
 };
 
+let siteRelationModel = null;
+
+const getTravelSiteModel = async () => {
+  if (siteRelationModel) return siteRelationModel;
+
+  const fieldMeta = await getOdooFields(MODEL, ['travel_from_site_id', 'travel_to_site_id']);
+  siteRelationModel =
+    fieldMeta?.travel_from_site_id?.relation ||
+    fieldMeta?.travel_to_site_id?.relation ||
+    odooConfig.siteModel;
+
+  if (!siteRelationModel) {
+    throw new Error('Could not discover the Odoo site model from travel.log fields.');
+  }
+
+  return siteRelationModel;
+};
+
 const resolveSiteId = async (value) => {
   if (!value) return false;
   if (typeof value === 'number') return value;
   if (typeof value === 'object' && value.id) return value.id;
 
-  const records = await searchOdooNameRecords(odooConfig.siteModel, value, 10);
+  const model = await getTravelSiteModel();
+  const records = await searchOdooNameRecords(model, value, 10);
   const exact = records.find(
     (record) =>
       record.name?.toLowerCase() === String(value).toLowerCase() ||
@@ -156,8 +176,9 @@ export const submitTravelLogToOdoo = async (payload) => {
   const toSiteId = await resolveSiteId(payload.siteTo || payload.toSite);
 
   if (!fromSiteId || !toSiteId) {
+    const model = await getTravelSiteModel();
     throw new Error(
-      `Could not match the route sites in Odoo. Check "${payload.siteFrom}" and "${payload.siteTo}" against ${odooConfig.siteModel}.`
+      `Could not match the route sites in Odoo. Check "${payload.siteFrom}" and "${payload.siteTo}" against ${model}.`
     );
   }
 
