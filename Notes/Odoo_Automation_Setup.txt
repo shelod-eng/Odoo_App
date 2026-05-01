@@ -1,0 +1,68 @@
+Recommended Improvement Plan
+
+Replace hardcoded Odoo config with environment config for the Odoo Dev server.
+
+Fix the Odoo client layer:
+
+Either use /web/session/authenticate + /web/dataset/call_kw, matching the web portal style.
+Or use proper external JSON-RPC execute_kw with real password/API key.
+Refactor Travel Log submit to call travelLogModule.createTravelLog() instead of Firestore.
+Refactor Submitted Logs to read from Odoo travel.log and linked expenses.
+Replace the offline queue so it stores Odoo operations, not Firestore operations.
+Move site/team/employee dropdowns from static/manual text to Odoo lookup data.
+
+Treat Firebase as removable unless you still want it for separate analytics or crash/offline metadata.
+=================================
+Odoo Dev URL
+The app currently defaults to:
+
+ODOO URL: http://mmatli.ddns.net:1616
+Database: full_test
+Site model: travel.site
+
+To test against your local Odoo Dev server instead, start Expo like this:
+
+$env:EXPO_PUBLIC_ODOO_URL="http://mmatli.ddns.net:1616"
+$env:EXPO_PUBLIC_ODOO_DB="full_test"
+$env:EXPO_PUBLIC_ODOO_SITE_MODEL="travel.site"
+$env:EXPO_PUBLIC_ODOO_PROXY_URL="http://10.0.2.2:17777"
+
+npx expo start --android --clear
+
+
+Get-NetTCPConnection -State Listen -LocalPort 3000,8081,19000,19001,19002,17777 |  Select-Object -ExpandProperty OwningProcess -Unique |   ForEach-Object { Stop-Process -Id $_ -Force }
+
+PS C:\Users\mpeta\Desktop\Base44-Codebase2026\Automation_App> $env:EXPO_PUBLIC_ODOO_URL="http://mmatli.ddns.net:1616"
+PS C:\Users\mpeta\Desktop\Base44-Codebase2026\Automation_App> $env:EXPO_PUBLIC_ODOO_DB="full_test"                   
+PS C:\Users\mpeta\Desktop\Base44-Codebase2026\Automation_App> $env:EXPO_PUBLIC_ODOO_SITE_MODEL="travel.site"         
+PS C:\Users\mpeta\Desktop\Base44-Codebase2026\Automation_App> npx expo start --android --clear                       
+Starting project at C:\Users\mpeta\Desktop\Base44-Codebase2026\Automation_App
+
+====================
+# If Odoo is on your Windows host and listening on port 16069:
+$env:EXPO_PUBLIC_ODOO_URL="http://10.0.2.2:16069"
+
+# Or if Odoo is reachable through the web URL shown in your browser:
+$env:EXPO_PUBLIC_ODOO_URL="http://mmatli.ddns.net:1616"
+
+$env:EXPO_PUBLIC_ODOO_DB="full_test"
+$env:EXPO_PUBLIC_ODOO_SITE_MODEL=""
+npx expo start --android --clear
+==================================
+$env:EXPO_PUBLIC_ODOO_URL="http://mmatli.ddns.net:1616"
+$env:EXPO_PUBLIC_ODOO_DB="full_test"
+$env:EXPO_PUBLIC_ODOO_SITE_MODEL=""
+npx expo start --android --clear
+
+
+=======================
+
+Test checklist:
+
+Login with Odoo credentials.
+Confirm dashboard opens after login.
+Open Travel Log.
+Submit route like HQ -> bam.
+Check Odoo web portal for new travel.log.
+Check whether expense creation appears in Odoo.
+Open Submitted Logs in the app and confirm Odoo records load.
