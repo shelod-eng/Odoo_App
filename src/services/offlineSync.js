@@ -77,11 +77,25 @@ export const flushQueue = async () => {
   await saveQueue(remaining);
 };
 
-export const startSyncListener = () =>
-  NetInfo.addEventListener((state) => {
+let unsubscribeSyncListener = null;
+
+export const startSyncListener = () => {
+  if (unsubscribeSyncListener) return unsubscribeSyncListener;
+
+  unsubscribeSyncListener = NetInfo.addEventListener((state) => {
     if (state.isConnected && state.isInternetReachable !== false) {
       flushQueue();
     }
   });
+
+  return unsubscribeSyncListener;
+};
+
+export const stopSyncListener = () => {
+  if (unsubscribeSyncListener) {
+    unsubscribeSyncListener();
+    unsubscribeSyncListener = null;
+  }
+};
 
 export const clearQueue = () => AsyncStorage.removeItem(QUEUE_KEY);

@@ -40,13 +40,11 @@ const app = getApps().length === 0
 // ── Initialize Auth (singleton) ────────────────────────
 export const auth = (() => {
   try {
-    // If already initialized, get the existing instance
-    return getAuth(app);
-  } catch (e) {
-    // Otherwise, initialize with persistence
     return initializeAuth(app, {
       persistence: getReactNativePersistence(AsyncStorage),
     });
+  } catch (e) {
+    return getAuth(app);
   }
 })();
 

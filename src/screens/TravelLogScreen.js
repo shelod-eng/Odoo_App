@@ -25,7 +25,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { enqueueOdooOperation } from '../services/offlineSync';
-import { getOdooUsers, odooSession } from '../services/odoo';
+import { getOdooEmployees, odooSession } from '../services/odoo';
 import { getTravelSiteOptions, submitTravelLogToOdoo } from '../services/modules/travelLogModule';
 import useNetworkStatus from '../hooks/useNetworkStatus';
 
@@ -246,8 +246,11 @@ const TravelLogScreen = ({ navigation }) => {
   const [checkoutTime, setCheckoutTime] = useState(new Date());
   const [siteFrom,     setSiteFrom]     = useState('');
   const [siteTo,       setSiteTo]       = useState('');
+  const [siteFromId,   setSiteFromId]   = useState(null);
+  const [siteToId,     setSiteToId]     = useState(null);
   const [kilometres,   setKilometres]   = useState('');
   const [whoseClaim,   setWhoseClaim]   = useState('');
+  const [whoseClaimId, setWhoseClaimId] = useState(null);
   const [transport,    setTransport]    = useState(null);
   const [teamOnSite,   setTeamOnSite]   = useState([]);
 
@@ -261,40 +264,99 @@ const TravelLogScreen = ({ navigation }) => {
   const [activeSiteDropdown, setActiveSiteDropdown] = useState(null);
   const [userSearch,   setUserSearch]   = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
+  const [showClaimDropdown, setShowClaimDropdown] = useState(false);
   const [saving,       setSaving]       = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const users = await getOdooUsers('', 50);
-        setAllUsers(
-          users.map((user) => ({
-            uid: user.id,
-            id: user.id,
-            fullName: user.name,
-            email: user.email || user.login,
-          }))
-        );
-      } catch (e) {
-        console.warn('Could not load Odoo users:', e.message);
-      }
-    })();
+  const mergeUsers = (current, incoming) => {
+    const byId = new Map(current.map((user) => [user.uid, user]));
+    incoming.forEach((user) => byId.set(user.uid, user));
+    return [...byId.values()].sort((a, b) => (a.fullName || '').localeCompare(b.fullName || ''));
+  };
+
+  const mergeSites = (current, incoming) => {
+    const byKey = new Map(current.map((site) => [`${site.model}-${site.id}`, site]));
+    incoming.forEach((site) => byKey.set(`${site.model}-${site.id}`, site));
+    return [...byKey.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  };
+
+  const loadOdooUsers = useCallback(async (search = '', limit = 50) => {
+    try {
+      const users = await getOdooEmployees(search, limit);
+      const mapped = users.map((user) => ({
+        uid: user.id,
+        id: user.id,
+        fullName: user.name,
+        email: user.work_email || (Array.isArray(user.user_id) ? user.user_id[1] : ''),
+      }));
+      setAllUsers((current) => mergeUsers(current, mapped));
+      return mapped;
+    } catch (e) {
+      console.warn('Could not load Odoo users:', e.message);
+      return [];
+    }
+  }, []);
+
+  const loadTravelSites = useCallback(async (search = '', limit = 100) => {
+    try {
+      const sites = await getTravelSiteOptions(search, limit);
+      setSiteOptions((current) => mergeSites(current, sites));
+      return sites;
+    } catch (e) {
+      console.warn('Could not load Odoo travel sites:', e.message);
+      return [];
+    }
   }, []);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const sites = await getTravelSiteOptions('', 100);
-        setSiteOptions(sites);
-      } catch (e) {
-        console.warn('Could not load Odoo travel sites:', e.message);
-      }
-    })();
-  }, []);
+    loadOdooUsers('', 50);
+  }, [loadOdooUsers]);
+
+  useEffect(() => {
+    loadTravelSites('', 100);
+  }, [loadTravelSites]);
+
+  useEffect(() => {
+    const q = userSearch.trim();
+    if (!online || q.length < 2) return undefined;
+
+    const timer = setTimeout(() => {
+      loadOdooUsers(q, 25);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [loadOdooUsers, online, userSearch]);
+
+  useEffect(() => {
+    const q = whoseClaim.trim();
+    if (!online || q.length < 2) return undefined;
+
+    const timer = setTimeout(() => {
+      loadOdooUsers(q, 25);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [loadOdooUsers, online, whoseClaim]);
+
+  useEffect(() => {
+    const q = activeSiteDropdown === 'from' ? siteFrom.trim() : siteTo.trim();
+    if (!online || q.length < 2) return undefined;
+
+    const timer = setTimeout(() => {
+      loadTravelSites(q, 25);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [activeSiteDropdown, loadTravelSites, online, siteFrom, siteTo]);
 
   const filteredUsers = allUsers.filter((u) => {
     if (!userSearch.trim()) return false;
     const q = userSearch.toLowerCase();
+    return u.fullName?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q);
+  });
+
+  const filteredClaimUsers = allUsers.filter((u) => {
+    if (!whoseClaim.trim()) return false;
+    const q = whoseClaim.toLowerCase();
     return u.fullName?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q);
   });
 
@@ -388,8 +450,11 @@ const TravelLogScreen = ({ navigation }) => {
         checkout:        checkoutDT.toISOString(),
         siteFrom:        siteFrom.trim(),
         siteTo:          siteTo.trim(),
+        siteFromId,
+        siteToId,
         kilometres:      Number(kilometres),
         whoseClaim:      whoseClaim.trim() || odooSession.userInfo?.name || '',
+        whoseClaimId,
         transport,
         teamOnSite:      teamOnSite.map((u) => ({ uid: u.uid, id: u.id, fullName: u.fullName, email: u.email })),
         submittedBy:     odooSession.uid || null,
@@ -481,7 +546,10 @@ const TravelLogScreen = ({ navigation }) => {
             <SiteField
               label="Site From"
               value={siteFrom}
-              onChangeText={setSiteFrom}
+              onChangeText={(text) => {
+                setSiteFrom(text);
+                setSiteFromId(null);
+              }}
               placeholder="Departure site"
               iconName="location-outline"
               flex={1}
@@ -489,6 +557,7 @@ const TravelLogScreen = ({ navigation }) => {
               onFocus={() => setActiveSiteDropdown('from')}
               onSelect={(site) => {
                 setSiteFrom(site.name);
+                setSiteFromId(site.id);
                 setActiveSiteDropdown(null);
               }}
               sites={filteredSites(siteFrom)}
@@ -499,7 +568,10 @@ const TravelLogScreen = ({ navigation }) => {
             <SiteField
               label="Site To"
               value={siteTo}
-              onChangeText={setSiteTo}
+              onChangeText={(text) => {
+                setSiteTo(text);
+                setSiteToId(null);
+              }}
               placeholder="Arrival site"
               iconName="flag-outline"
               flex={1}
@@ -507,6 +579,7 @@ const TravelLogScreen = ({ navigation }) => {
               onFocus={() => setActiveSiteDropdown('to')}
               onSelect={(site) => {
                 setSiteTo(site.name);
+                setSiteToId(site.id);
                 setActiveSiteDropdown(null);
               }}
               sites={filteredSites(siteTo)}
@@ -517,8 +590,51 @@ const TravelLogScreen = ({ navigation }) => {
 
           {/* ── CLAIM ── */}
           <SectionLabel iconName="receipt-outline" label="Claim Details" />
-          <InputField label="Whose Claim" value={whoseClaim} onChangeText={setWhoseClaim}
-            placeholder="Name of the claimant" iconName="person-outline" />
+          <View style={s.searchWrap}>
+            <View style={s.inputContainer}>
+              <Text style={s.inputLabel}>Whose Claim</Text>
+              <View style={s.iconInput}>
+                <Ionicons name="person-outline" size={16} color={C.textMuted} style={s.iconInputIcon} />
+                <TextInput
+                  style={s.iconInputText}
+                  value={whoseClaim}
+                  onChangeText={(text) => {
+                    setWhoseClaim(text);
+                    setWhoseClaimId(null);
+                    setShowClaimDropdown(true);
+                  }}
+                  onFocus={() => setShowClaimDropdown(true)}
+                  placeholder="Name of the claimant"
+                  placeholderTextColor={C.textMuted}
+                />
+              </View>
+            </View>
+
+            {showClaimDropdown && filteredClaimUsers.length > 0 && (
+              <View style={s.dropdown}>
+                {filteredClaimUsers.slice(0, 6).map((u) => (
+                  <TouchableOpacity
+                    key={`claim-${u.uid}`}
+                    style={s.dropdownItem}
+                    onPress={() => {
+                      setWhoseClaim(u.fullName || '');
+                      setWhoseClaimId(u.id);
+                      setShowClaimDropdown(false);
+                    }}
+                  >
+                    <View style={s.dropdownAvatar}>
+                      <Text style={s.dropdownAvatarText}>{u.fullName?.[0]?.toUpperCase() ?? '?'}</Text>
+                    </View>
+                    <View style={s.dropdownInfo}>
+                      <Text style={s.dropdownName}>{u.fullName}</Text>
+                      <Text style={s.dropdownEmail}>{u.email}</Text>
+                    </View>
+                    <Ionicons name="checkmark-circle-outline" size={20} color={C.textMuted} />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </View>
 
           {/* ── TRANSPORT ── */}
           <SectionLabel iconName="car-sport-outline" label="Transport" />

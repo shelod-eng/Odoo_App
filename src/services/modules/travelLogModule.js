@@ -10,6 +10,7 @@ import {
   callOdooAction,
   odooSession,
   getOdooFields,
+  getOdooUserInfo,
   searchOdooNameRecords,
 } from '../odoo';
 import { odooConfig } from '../../config/odooConfig';
@@ -19,6 +20,7 @@ const MODEL = 'travel.log';
 // ── Field Definitions ───────────────────────────────────
 const TRAVEL_LOG_FIELDS = [
   'id',
+  'create_uid',
   'travel_date',
   'travel_check_in_time',
   'travel_check_out_time',
@@ -39,7 +41,10 @@ const TRAVEL_LOG_FIELDS = [
 
 const formatOdooDate = (date) => {
   const d = date instanceof Date ? date : new Date(date);
-  return d.toISOString().split('T')[0];
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 };
 
 const dateToFloatTime = (date) => {
@@ -53,21 +58,64 @@ const many2OneName = (value) => {
 };
 
 let siteRelationModel = null;
+let travelLogFieldMeta = null;
+
+const getTravelLogFieldMeta = async () => {
+  if (travelLogFieldMeta) return travelLogFieldMeta;
+  travelLogFieldMeta = await getOdooFields(MODEL, []);
+  return travelLogFieldMeta;
+};
+
+const hasField = (fields, fieldName) => Boolean(fields?.[fieldName]);
+
+const discoverTravelSiteModel = async () => {
+  const fieldMeta = await getOdooFields(MODEL, ['travel_from_site_id', 'travel_to_site_id']);
+  return (
+    fieldMeta?.travel_from_site_id?.relation ||
+    fieldMeta?.travel_to_site_id?.relation ||
+    null
+  );
+};
 
 const getTravelSiteModel = async () => {
   if (siteRelationModel) return siteRelationModel;
 
-  const fieldMeta = await getOdooFields(MODEL, ['travel_from_site_id', 'travel_to_site_id']);
-  siteRelationModel =
-    fieldMeta?.travel_from_site_id?.relation ||
-    fieldMeta?.travel_to_site_id?.relation ||
-    odooConfig.siteModel;
+  try {
+    siteRelationModel = await discoverTravelSiteModel();
+  } catch (error) {
+    console.warn('Could not discover Odoo travel site model:', error.message);
+  }
+
+  siteRelationModel = siteRelationModel || odooConfig.siteModel;
 
   if (!siteRelationModel) {
-    throw new Error('Could not discover the Odoo site model from travel.log fields.');
+    throw new Error('Could not determine the Odoo site model.');
   }
 
   return siteRelationModel;
+};
+
+const searchTravelSites = async (search = '', limit = 20) => {
+  const configuredOrDiscoveredModel = await getTravelSiteModel();
+
+  try {
+    return {
+      model: configuredOrDiscoveredModel,
+      records: await searchOdooNameRecords(configuredOrDiscoveredModel, search, limit),
+    };
+  } catch (error) {
+    const discoveredModel = await discoverTravelSiteModel();
+
+    if (!discoveredModel || discoveredModel === configuredOrDiscoveredModel) {
+      throw error;
+    }
+
+    siteRelationModel = discoveredModel;
+    return {
+      model: discoveredModel,
+      records: await searchOdooNameRecords(discoveredModel, search, limit),
+    };
+  }
 };
 
 const resolveSiteId = async (value) => {
@@ -75,8 +123,7 @@ const resolveSiteId = async (value) => {
   if (typeof value === 'number') return value;
   if (typeof value === 'object' && value.id) return value.id;
 
-  const model = await getTravelSiteModel();
-  const records = await searchOdooNameRecords(model, value, 10);
+  const { records } = await searchTravelSites(value, 10);
   const exact = records.find(
     (record) =>
       record.name?.toLowerCase() === String(value).toLowerCase() ||
@@ -87,8 +134,7 @@ const resolveSiteId = async (value) => {
 };
 
 export const getTravelSiteOptions = async (search = '', limit = 50) => {
-  const model = await getTravelSiteModel();
-  const records = await searchOdooNameRecords(model, search, limit);
+  const { model, records } = await searchTravelSites(search, limit);
 
   return records.map((record) => ({
     id: record.id,
@@ -97,13 +143,18 @@ export const getTravelSiteOptions = async (search = '', limit = 50) => {
   }));
 };
 
-const normaliseTechnicianIds = (teamOnSite = []) => {
+const normaliseTechnicianIds = (teamOnSite = [], relation = 'hr.employee') => {
   const ids = teamOnSite
     .map((member) => member.id || member.uid)
     .filter((id) => typeof id === 'number');
 
-  if (!ids.includes(odooSession.uid)) {
-    ids.unshift(odooSession.uid);
+  const currentId =
+    relation === 'hr.employee'
+      ? odooSession.userInfo?.employee_id?.[0]
+      : odooSession.uid;
+
+  if (typeof currentId === 'number' && !ids.includes(currentId)) {
+    ids.unshift(currentId);
   }
 
   return [...new Set(ids)];
@@ -133,11 +184,24 @@ export const toSubmittedLogCard = (log) => ({
 export const getMyTravelLogs = async (limit = 50) => {
   try {
     if (!odooSession.uid) {
-      throw new Error('Not authenticated');
+      const loaded = await odooSession.load();
+      if (!loaded) throw new Error('Not authenticated');
     }
 
-    // Get logs for current user's employee record
-    const domain = [['employee_id', '=', odooSession.userInfo?.employee_id?.[0] || false]];
+    if (!odooSession.userInfo?.employee_id?.[0]) {
+      try {
+        odooSession.userInfo = await getOdooUserInfo(odooSession.uid);
+        await odooSession.save();
+      } catch (error) {
+        console.warn('Could not refresh Odoo employee for submitted logs:', error.message);
+      }
+    }
+
+    const employeeId = odooSession.userInfo?.employee_id?.[0];
+    const domain =
+      typeof employeeId === 'number'
+        ? ['|', ['employee_id', '=', employeeId], ['create_uid', '=', odooSession.uid]]
+        : [['create_uid', '=', odooSession.uid]];
     const logs = await searchOdooRecords(MODEL, domain, TRAVEL_LOG_FIELDS, limit);
 
     return logs;
@@ -162,17 +226,31 @@ export const getTravelLog = async (travelLogId) => {
 // Mirrors default_get from Odoo model
 export const createTravelLog = async (values) => {
   try {
+    const fields = await getTravelLogFieldMeta();
     const now = new Date();
     const currentFloatTime = now.getHours() + now.getMinutes() / 60.0;
 
-    const defaults = {
-      travel_date: now.toISOString().split('T')[0], // Today
-      travel_check_in_time: currentFloatTime, // Float format (14.5 = 14:30)
-      employee_id: odooSession.userInfo?.employee_id?.[0] || false,
-      technician_id: [[6, 0, [odooSession.uid]]], // Many2many format
-      travel_is_company_vehicle: true,
-      ...values,
-    };
+    const defaults = { ...values };
+
+    if (hasField(fields, 'travel_date') && !defaults.travel_date) {
+      defaults.travel_date = now.toISOString().split('T')[0];
+    }
+    if (hasField(fields, 'travel_check_in_time') && !defaults.travel_check_in_time) {
+      defaults.travel_check_in_time = currentFloatTime;
+    }
+    if (hasField(fields, 'employee_id') && !defaults.employee_id && odooSession.userInfo?.employee_id?.[0]) {
+      defaults.employee_id = odooSession.userInfo.employee_id[0];
+    }
+    if (
+      hasField(fields, 'technician_id') &&
+      !defaults.technician_id &&
+      fields.technician_id?.relation === 'res.users'
+    ) {
+      defaults.technician_id = [[6, 0, [odooSession.uid]]];
+    }
+    if (hasField(fields, 'travel_is_company_vehicle') && defaults.travel_is_company_vehicle === undefined) {
+      defaults.travel_is_company_vehicle = true;
+    }
 
     const travelLogId = await createOdooRecord(MODEL, defaults);
     return travelLogId;
@@ -183,45 +261,74 @@ export const createTravelLog = async (values) => {
 };
 
 export const submitTravelLogToOdoo = async (payload) => {
-  const fromSiteId = await resolveSiteId(payload.siteFrom || payload.fromSite);
-  const toSiteId = await resolveSiteId(payload.siteTo || payload.toSite);
+  const fields = await getTravelLogFieldMeta();
+  const fromSiteName = payload.siteFrom || payload.fromSite || '';
+  const toSiteName = payload.siteTo || payload.toSite || '';
+  let fromSiteId = typeof payload.siteFromId === 'number' ? payload.siteFromId : false;
+  let toSiteId = typeof payload.siteToId === 'number' ? payload.siteToId : false;
 
-  if (!fromSiteId || !toSiteId) {
-    const model = await getTravelSiteModel();
-    throw new Error(
-      `Could not match the route sites in Odoo. Check "${payload.siteFrom}" and "${payload.siteTo}" against ${model}.`
-    );
+  if (hasField(fields, 'travel_from_site_id') && !fromSiteId && fromSiteName) {
+    fromSiteId = await resolveSiteId(fromSiteName);
+  }
+  if (hasField(fields, 'travel_to_site_id') && !toSiteId && toSiteName) {
+    toSiteId = await resolveSiteId(toSiteName);
   }
 
-  const technicianIds = normaliseTechnicianIds(payload.teamOnSite);
-  const values = {
-    travel_date: formatOdooDate(payload.checkin || payload.travelDate || new Date()),
-    travel_check_in_time: dateToFloatTime(payload.checkin || new Date()),
-    travel_check_out_time: payload.checkout ? dateToFloatTime(payload.checkout) : 0,
-    travel_from_site_id: fromSiteId,
-    travel_to_site_id: toSiteId,
-    travel_kilometers: Number(payload.kilometres || payload.kilometers || 0),
-    travel_is_company_vehicle: payload.transport !== 'my',
-    travel_notes: payload.notes || '',
-    travel_screenshot: Boolean(payload.screenshotAttached),
-    employee_id: odooSession.userInfo?.employee_id?.[0] || false,
-    technician_id: [[6, 0, technicianIds]],
-  };
+  const technicianRelation = fields.technician_id?.relation;
+  const technicianIds = normaliseTechnicianIds(payload.teamOnSite, technicianRelation);
+  const routeNote = `Route: ${fromSiteName || 'Not specified'} -> ${toSiteName || 'Not specified'}`;
+  const baseNotes = payload.notes ? `${payload.notes}\n${routeNote}` : routeNote;
+  const values = {};
+
+  if (hasField(fields, 'travel_date')) {
+    values.travel_date = formatOdooDate(payload.checkin || payload.travelDate || new Date());
+  }
+  if (hasField(fields, 'travel_check_in_time')) {
+    values.travel_check_in_time = dateToFloatTime(payload.checkin || new Date());
+  }
+  if (hasField(fields, 'travel_check_out_time') && payload.checkout) {
+    values.travel_check_out_time = dateToFloatTime(payload.checkout);
+  }
+  if (hasField(fields, 'travel_from_site_id') && fromSiteId) {
+    values.travel_from_site_id = fromSiteId;
+  }
+  if (hasField(fields, 'travel_to_site_id') && toSiteId) {
+    values.travel_to_site_id = toSiteId;
+  }
+  if (hasField(fields, 'travel_kilometers')) {
+    values.travel_kilometers = Number(payload.kilometres || payload.kilometers || 0);
+  }
+  if (hasField(fields, 'travel_is_company_vehicle')) {
+    values.travel_is_company_vehicle = payload.transport !== 'my';
+  }
+  if (hasField(fields, 'travel_notes')) {
+    values.travel_notes = baseNotes;
+  }
+  if (hasField(fields, 'travel_screenshot')) {
+    values.travel_screenshot = Boolean(payload.screenshotAttached);
+  }
+  if (hasField(fields, 'employee_id')) {
+    const employeeId =
+      typeof payload.whoseClaimId === 'number'
+        ? payload.whoseClaimId
+        : odooSession.userInfo?.employee_id?.[0];
+
+    if (typeof employeeId === 'number') {
+      values.employee_id = employeeId;
+    }
+  }
+  if (hasField(fields, 'technician_id') && technicianIds.length) {
+    values.technician_id = [[6, 0, technicianIds]];
+  }
 
   const travelLogId = await createTravelLog(values);
 
-  if (payload.checkout) {
+  if (payload.transport === 'my') {
     try {
-      await recordCheckOut(travelLogId);
+      await createExpenseFromTravel(travelLogId);
     } catch (error) {
-      console.warn('Odoo checkout action failed after travel log create:', error.message);
+      console.warn('Odoo expense action skipped after travel log create:', error.message);
     }
-  }
-
-  try {
-    await createExpenseFromTravel(travelLogId);
-  } catch (error) {
-    console.warn('Odoo expense action failed after travel log create:', error.message);
   }
 
   return getTravelLog(travelLogId);
@@ -262,16 +369,10 @@ export const recordCheckIn = async (travelLogId, toSiteId, fromSiteId, kilometer
 // ── Record check-out time (matches action_set_check_out_time) ───────
 export const recordCheckOut = async (travelLogId) => {
   try {
-    const now = new Date();
-    const checkOutTime = now.getHours() + now.getMinutes() / 60.0;
-
-    // Call the Odoo action instead of direct update
-    // This ensures all server-side logic runs (constraints, audit, etc.)
     const result = await callOdooAction(MODEL, travelLogId, 'action_set_check_out_time');
 
     return result;
   } catch (error) {
-    console.error('Failed to record check-out:', error);
     throw error;
   }
 };
@@ -279,12 +380,10 @@ export const recordCheckOut = async (travelLogId) => {
 // ── Create expense from travel log (matches action_create_expense) ──
 export const createExpenseFromTravel = async (travelLogId) => {
   try {
-    // Call the Odoo action that handles all the expense creation logic
     const result = await callOdooAction(MODEL, travelLogId, 'action_create_expense');
 
     return result;
   } catch (error) {
-    console.error('Failed to create expense:', error);
     throw error;
   }
 };

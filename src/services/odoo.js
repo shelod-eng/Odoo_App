@@ -1,5 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { normalizeOdooBaseUrl, odooConfig } from '../config/odooConfig';
+import {
+  getOdooReachabilityHint,
+  normalizeOdooBaseUrl,
+  normalizeOdooProxyUrl,
+  odooConfig,
+} from '../config/odooConfig';
 
 const SESSION_KEY = 'odoo_session';
 
@@ -8,6 +13,9 @@ class OdooSession {
     this.uid = null;
     this.sessionId = null;
     this.userInfo = null;
+    this.database = null;
+    this.login = null;
+    this.password = null;
   }
 
   async load() {
@@ -19,6 +27,9 @@ class OdooSession {
       this.uid = session.uid;
       this.sessionId = session.sessionId;
       this.userInfo = session.userInfo;
+      this.database = session.database;
+      this.login = session.login;
+      this.password = session.password;
       return Boolean(this.uid);
     } catch (error) {
       console.error('Error loading Odoo session:', error);
@@ -31,6 +42,9 @@ class OdooSession {
       uid: this.uid,
       sessionId: this.sessionId,
       userInfo: this.userInfo,
+      database: this.database,
+      login: this.login,
+      password: this.password,
     };
     await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(session));
   }
@@ -39,6 +53,9 @@ class OdooSession {
     this.uid = null;
     this.sessionId = null;
     this.userInfo = null;
+    this.database = null;
+    this.login = null;
+    this.password = null;
     await AsyncStorage.removeItem(SESSION_KEY);
   }
 }
@@ -74,7 +91,9 @@ const requestOdoo = async (path, params = {}, withSession = true) => {
       }),
     });
   } catch (error) {
-    throw new Error(`Could not reach Odoo at ${normalizeOdooBaseUrl()}. ${error.message}`);
+    throw new Error(
+      `Could not reach Odoo at ${normalizeOdooBaseUrl()}. ${error.message}. ${getOdooReachabilityHint()}`
+    );
   }
 
   const data = await response.json();
@@ -89,6 +108,58 @@ const requestOdoo = async (path, params = {}, withSession = true) => {
   }
 
   return data.result;
+};
+
+const fetchJsonRpc = async (url, service, method, args = []) => {
+  let response;
+
+  response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'call',
+      params: { service, method, args },
+      id: Date.now(),
+    }),
+  });
+
+  const data = await response.json();
+
+  if (data.error) {
+    const message =
+      data.error.data?.message ||
+      data.error.data?.debug ||
+      data.error.message ||
+      'Odoo API error';
+    throw new Error(message);
+  }
+
+  return data.result;
+};
+
+const requestOdooJsonRpc = async (service, method, args = []) => {
+  const directUrl = `${normalizeOdooBaseUrl()}/jsonrpc`;
+
+  try {
+    return await fetchJsonRpc(directUrl, service, method, args);
+  } catch (directError) {
+    const proxyBaseUrl = normalizeOdooProxyUrl();
+
+    if (!proxyBaseUrl) {
+      throw new Error(
+        `Could not reach Odoo at ${normalizeOdooBaseUrl()}. ${directError.message}. ${getOdooReachabilityHint()}`
+      );
+    }
+
+    try {
+      return await fetchJsonRpc(`${proxyBaseUrl}/jsonrpc`, service, method, args);
+    } catch (proxyError) {
+      throw new Error(
+        `Could not reach Odoo directly or through the local proxy. Direct: ${directError.message}. Proxy: ${proxyError.message}`
+      );
+    }
+  }
 };
 
 export const loginOdoo = async (username, password) => {
@@ -108,6 +179,9 @@ export const loginOdoo = async (username, password) => {
 
   odooSession.uid = result.uid;
   odooSession.sessionId = result.session_id;
+  odooSession.database = odooConfig.database;
+  odooSession.login = username;
+  odooSession.password = password;
   odooSession.userInfo = {
     id: result.uid,
     uid: result.uid,
@@ -147,6 +221,23 @@ export const callKw = async (model, method, args = [], kwargs = {}) => {
     if (!loaded) throw new Error('Not authenticated with Odoo');
   }
 
+  if (!odooSession.password) {
+    await odooSession.clear();
+    throw new Error('Please log in again before syncing with Odoo.');
+  }
+
+  if (odooSession.database && odooSession.password) {
+    return requestOdooJsonRpc('object', 'execute_kw', [
+      odooSession.database,
+      odooSession.uid,
+      odooSession.password,
+      model,
+      method,
+      args,
+      kwargs,
+    ]);
+  }
+
   return requestOdoo(`/web/dataset/call_kw/${model}/${method}`, {
     model,
     method,
@@ -169,7 +260,7 @@ export const searchOdooRecords = async (
   });
 
 export const getOdooFields = (model, fieldNames = []) =>
-  callKw(model, 'fields_get', [fieldNames], {
+  callKw(model, 'fields_get', fieldNames.length ? [fieldNames] : [], {
     attributes: ['string', 'type', 'relation'],
   });
 
@@ -203,6 +294,19 @@ export const getOdooUsers = async (search = '', limit = 25) => {
   return searchOdooRecords('res.users', domain, ['id', 'name', 'login', 'email'], limit, 'name asc');
 };
 
+export const getOdooEmployees = async (search = '', limit = 25) => {
+  const domain = search
+    ? ['|', ['name', 'ilike', search], ['work_email', 'ilike', search]]
+    : [];
+  return searchOdooRecords(
+    'hr.employee',
+    domain,
+    ['id', 'name', 'work_email', 'user_id'],
+    limit,
+    'name asc'
+  );
+};
+
 export const searchOdooNameRecords = async (model, search = '', limit = 20) => {
   const domain = search ? [['name', 'ilike', search]] : [];
   return searchOdooRecords(model, domain, ['id', 'name', 'display_name'], limit, 'name asc');
@@ -212,6 +316,12 @@ export const onAuthStateChanged = async (callback) => {
   const loaded = await odooSession.load();
 
   if (!loaded || !odooSession.uid) {
+    callback(null);
+    return;
+  }
+
+  if (!odooSession.password) {
+    await odooSession.clear();
     callback(null);
     return;
   }
@@ -243,6 +353,7 @@ export default {
   callKw,
   getOdooFields,
   getOdooUsers,
+  getOdooEmployees,
   searchOdooNameRecords,
   odooSession,
 };

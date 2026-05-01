@@ -9,8 +9,8 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
-  SafeAreaView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { loginOdoo } from '../services/odoo';
 
 const LoginScreen = ({ navigation }) => {
